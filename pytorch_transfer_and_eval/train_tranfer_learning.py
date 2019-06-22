@@ -1,8 +1,4 @@
-# this code is modified from the pytorch example code: https://github.com/pytorch/examples/blob/master/imagenet/main.py
-# after the model is trained, you might use convert_model.py to remove the data parallel module to make the model as standalone weight.
-#
-# Bolei Zhou
-
+# this code is modified from the Places356 train_placesCNN.py, adapted to us transfer learning 
 import argparse
 import os
 import shutil
@@ -18,8 +14,8 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
 from tensorboardX import SummaryWriter
-writer = SummaryWriter()
 
+import wideresnet
 import pdb
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
@@ -35,7 +31,7 @@ parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet18',
                         ' (default: resnet18)')
 parser.add_argument('-j', '--workers', default=6, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=10, type=int, metavar='N',
+parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -49,15 +45,20 @@ parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)')
 parser.add_argument('--print-freq', '-p', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
+parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                    help='path to latest checkpoint (default: none)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--pretrained', dest='pretrained', action='store_false',
                     help='use pre-trained model')
-parser.add_argument('--num_classes',default=2, type=int, help='num of class in the model')
-parser.add_argument('--dataset',default='places365',help='which dataset to train')
+parser.add_argument('--num_classes',default=365, type=int, help='num of class in the model')
+parser.add_argument('--transfer', '-tl',default='',help='Transfer learning weights from Places365')
 
 best_prec1 = 0
-UNFREZE_LVL = 2
+freze = 2
+
+writer = SummaryWriter()
+
 
 def main():
     global args, best_prec1, globaliter_train, globaliter_val
@@ -66,37 +67,56 @@ def main():
     args = parser.parse_args()
     print(args)
     # create model
+    num_classes = args.num_classes
+    if args.transfer != "":
+        num_classes = 365
     print("=> creating model '{}'".format(args.arch))
-
-    model = models.__dict__[args.arch](num_classes=365)
-    model_file = '%s_places365.pth.tar' % args.arch
-    if not os.access(model_file, os.W_OK):
-        weight_url = 'http://places2.csail.mit.edu/models_places365/' + model_file
-        os.system('wget ' + weight_url)
-
-    checkpoint = torch.load(model_file, map_location=lambda storage, loc: storage)
-    state_dict = {str.replace(k,'module.',''): v for k,v in checkpoint['state_dict'].items()}
-    model.load_state_dict(state_dict)
-
-    
-    # Freze all pre-trained parametes
-    for param in model.parameters():
-        param.requires_grad = False
-    # Add unfrozen Fully connected Layer
-    model.fc = nn.Linear(512 , args.num_classes)        
-    
-    # Unfreze last block
-    if UNFREZE_LVL == 2: 
-        for param in model.layer4.parameters():
-            param.requires_grad = True
-
-    if args.arch.lower().startswith('vgg'):
-        model.features = torch.nn.DataParallel(model.features)
-        model.cuda()
+    if args.arch.lower().startswith('wideresnet'):
+        # a customized resnet model with last feature map size as 14x14 for better class activation mapping
+        if args.arch.lower() == 'wideresnet50': 
+            model  = wideresnet.resnet50(num_classes=num_classes)
+        if args.arch.lower() == 'wideresnet18': 
+            model  = wideresnet.resnet18(num_classes=num_classes)
     else:
-        model = torch.nn.DataParallel(model).cuda()
-
+        model = models.__dict__[args.arch](num_classes=num_classes)
+    
     print(model)
+    # optionally resume from a checkpoint
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print("=> loading checkpoint '{}'".format(args.resume))
+            checkpoint = torch.load(args.resume)
+            args.start_epoch = checkpoint['epoch']
+            best_prec1 = checkpoint['best_prec1']
+            model.load_state_dict(checkpoint['state_dict'])
+            print("=> loaded checkpoint '{}' (epoch {})"
+                  .format(args.resume, checkpoint['epoch']))
+        else:
+            print("=> no checkpoint found at '{}'".format(args.resume))
+
+
+    if args.transfer != "":
+        if os.path.isfile(args.transfer):
+            print("=> loading checkpoint '{}'".format(args.transfer))
+            checkpoint = torch.load(args.transfer, map_location=lambda storage, loc: storage)
+            state_dict = {str.replace(k,'module.',''): v for k,v in checkpoint['state_dict'].items()}
+            model.load_state_dict(state_dict)
+            # print("=> loaded checkpoint '{}' (epoch {})"
+                #   .format(args.resume, checkpoint['epoch']))
+        else:
+            print("=> no checkpoint found at '{}'".format(args.transfer))
+        for param in model.parameters():
+            param.requires_grad = False
+        if freze == 2:
+            for param in model.layer4.parameters():
+                param.requires_grad = True
+        args.arch.lower() == 'wideresnet50':
+            model.fc = nn.Linear(2040 , 2)
+        else:
+            model.fc = nn.Linear(512 , 2)
+        model.fc.reset_parameters()
+
+    model = torch.nn.DataParallel(model).cuda()
 
     cudnn.benchmark = True
 
@@ -118,7 +138,7 @@ def main():
 
     val_loader = torch.utils.data.DataLoader(
         datasets.ImageFolder(valdir, transforms.Compose([
-            transforms.Scale(256),
+            transforms.Resize(256),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             normalize,
@@ -128,9 +148,15 @@ def main():
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda()
-    optimizer = torch.optim.SGD( filter(lambda p: p.requires_grad, model.parameters()), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+
+    if args.transfer != "":
+        optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), args.lr,
+                                    momentum=args.momentum,
+                                    weight_decay=args.weight_decay)
+    else:
+        optimizer = torch.optim.SGD(model.parameters(), args.lr,
+                                    momentum=args.momentum,
+                                    weight_decay=args.weight_decay)
 
     if args.evaluate:
         validate(val_loader, model, criterion)
@@ -138,6 +164,7 @@ def main():
 
     for epoch in range(args.start_epoch, args.epochs):
         adjust_learning_rate(optimizer, epoch)
+
         # train for one epoch
         train(train_loader, model, criterion, optimizer, epoch)
 
@@ -153,8 +180,6 @@ def main():
             'state_dict': model.state_dict(),
             'best_prec1': best_prec1,
         }, is_best, args.arch.lower())
-    
-    writer.export_scalars_to_json("./all_scalars.json")
     writer.close()
 
 
@@ -174,7 +199,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        target = target.cuda(async=True)
+        target = target.cuda(non_blocking=True)
         input_var = torch.autograd.Variable(input)
         target_var = torch.autograd.Variable(target)
         # compute output
@@ -197,7 +222,6 @@ def train(train_loader, model, criterion, optimizer, epoch):
         end = time.time()
 
         if i % args.print_freq == 0:
-            globaliter_train += 1
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
@@ -205,9 +229,9 @@ def train(train_loader, model, criterion, optimizer, epoch):
                   'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
                    epoch, i, len(train_loader), batch_time=batch_time,
                    data_time=data_time, loss=losses, top1=top1))
-            writer.add_scalar('loss', loss.item(), globaliter_train/args.print_freq)
-            writer.add_scalar('Accuracy', top1.val, globaliter_train/args.print_freq)
-
+        writer.add_scalar('loss', loss.item(), globaliter_train)
+        writer.add_scalar('Accuracy', prec1.item(), globaliter_train)
+        globaliter_train += 1
 
 def validate(val_loader, model, criterion):
     global globaliter_val
@@ -221,7 +245,7 @@ def validate(val_loader, model, criterion):
 
     end = time.time()
     for i, (input, target) in enumerate(val_loader):
-        target = target.cuda(async=True)
+        target = target.cuda(non_blocking=True)
         input_var = torch.autograd.Variable(input, volatile=True)
         target_var = torch.autograd.Variable(target, volatile=True)
 
@@ -240,16 +264,15 @@ def validate(val_loader, model, criterion):
         end = time.time()
 
         if i % args.print_freq == 0:
-            globaliter_val += 1
             print('Test: [{0}/{1}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
                    i, len(val_loader), batch_time=batch_time, loss=losses,
                    top1=top1, top5=top5))
-        
-            writer.add_scalar('Validation Loss', loss.item(), globaliter_val/args.print_freq)
-            writer.add_scalar('Validation Accuracy', top1.val, globaliter_val/args.print_freq)
+        writer.add_scalar('Validation Loss', loss.item(), globaliter_val)
+        writer.add_scalar('Validation Accuracy', prec1.item(), globaliter_val)
+        globaliter_val += 1
     print(' * Prec@1 {top1.avg:.3f} Prec@1 {top5.avg:.3f}'
           .format(top1=top1, top5=top5))
 
@@ -282,7 +305,7 @@ class AverageMeter(object):
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-    lr = args.lr * (0.1 ** (epoch // 30))
+    lr = args.lr * (0.1 ** (epoch // 3))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
@@ -305,4 +328,3 @@ def accuracy(output, target, topk=(1,)):
 
 if __name__ == '__main__':
     main()
-

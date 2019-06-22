@@ -1,0 +1,5 @@
+torch>=1.1.0
+torchvision==0.3.0
+tensorboardx>=1.7
+matplotlib>=2.2.3
+sklearn
