@@ -1,3 +1,6 @@
+# This file implements the WideResNet networks created by the authors of the Places365 Dataset.
+# It was extracted from https://github.com/CSAILVision/places365 by Bolei Zhou
+
 import torch.nn as nn
 import math
 import torch.utils.model_zoo as model_zoo
