@@ -1,7 +1,6 @@
 from keras.models import model_from_json
 
 import os
-from PIL import Image
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
