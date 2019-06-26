@@ -11,8 +11,11 @@ import (
 	"sync"
 )
 
-var NUMCLASS = 2
-var WORKERS = 8
+var NumClass = 365
+var Workers = 18
+var CategoriesFile = "categories_places365.txt"
+var TrainFile = "places365_train_challenge.txt"
+var ValFile = "places365_val.txt"
 
 var categoriesMap map[int]string
 var wg sync.WaitGroup
@@ -101,12 +104,12 @@ func processFileAndCopy(line, prefix string) {
 func main() {
 	linesChan := make(chan string, 50)
 	wg.Add(1)
-	go lineCaller("categories_places365.txt", linesChan)
+	go lineCaller(CategoriesFile, linesChan)
 
 	categoriesMap = make(map[int]string)
 
 	var line string
-	for i := 0; i < NUMCLASS; i++ {
+	for i := 0; i < NumClass; i++ {
 		line = <-linesChan
 		classID, classPath := separateAndConvert(line)
 		className := strings.Split(classPath, "/")
@@ -118,24 +121,21 @@ func main() {
 	fmt.Println("Created Directories")
 	wg.Add(1)
 	fmt.Println("Moving Train Files")
-	go lineCaller("places365_train_challenge.txt", linesChan)
-	// go closeChanWhenDone(linesChan)
-	for w := 1; w <= WORKERS; w++ {
-		go worker(w, "", "train", linesChan)
+	go lineCaller(, linesChan)
+	for w := 1; w <= Workers; w++ {
+		go worker(w, TrainFile, "train", linesChan)
 	}
 	closeChanWhenDone(linesChan)
 	fmt.Println("Copied all Train Files")
-	wg.Add(1)
 
+	wg.Add(1)
 	linesChan = make(chan string, 50)
 	fmt.Println("Moving Validation Files")
-	go lineCaller("places365_val.txt", linesChan)
-	// go closeChanWhenDone(linesChan)
-	for w := 1; w <= WORKERS; w++ {
+	go lineCaller(ValFile, linesChan)
+	for w := 1; w <= Workers; w++ {
 		go worker(w, "/", "val", linesChan)
 	}
 	closeChanWhenDone(linesChan)
-	wg.Add(1)
 
 	fmt.Println("Copied all Validation Files")
 }
